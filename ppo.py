@@ -35,12 +35,12 @@ tqdm.pandas()
 class ScriptArguments:
     ppo_config: PPOConfig = field(
         default_factory=lambda: PPOConfig(
-            model_name="EleutherAI/gpt-neo-1.3B",
+            model_name="susnato/phi-1_5_dev",
             query_dataset="imdb",
             reward_model="text-classification:Hello-SimpleAI/chatgpt-detector-roberta",
             learning_rate=1.41e-5,
             log_with=None,
-            mini_batch_size=16,
+            mini_batch_size=8, # really important for memory
             batch_size=128,
             gradient_accumulation_steps=1,
             early_stopping=False,
@@ -137,11 +137,12 @@ else:
 model = trl_model_class.from_pretrained(
     args.ppo_config.model_name,
     trust_remote_code=args.trust_remote_code,
-    device_map=device_map,
-    peft_config=peft_config,
+    # device_map=device_map,
+    # peft_config=peft_config,
     torch_dtype=torch.bfloat16
 )
-
+print(f"using model: {args.ppo_config.model_name}")
+print(f"with mini-batch: {args.ppo_config.mini_batch_size}")
 
 tokenizer = AutoTokenizer.from_pretrained(args.ppo_config.model_name)
 
@@ -184,8 +185,10 @@ generation_kwargs = {
     "top_p": 1.0,
     "do_sample": True,
     "pad_token_id": tokenizer.eos_token_id,
-    "max_new_tokens": 1024,
+    "max_new_tokens": 256,
 }
+
+print(f"max new tokens: {generation_kwargs.get('max_new_tokens')}")
 
 for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     query_tensors = batch["input_ids"]
