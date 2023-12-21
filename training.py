@@ -72,7 +72,7 @@ args = tyro.cli(ScriptArguments)
 
 # We then define the arguments to pass to the sentiment analysis pipeline.
 # We set `return_all_scores` to True to get the sentiment score for each token.
-sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16}
+sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16, "max_length": 512, "truncation": True}
 
 trl_model_class = AutoModelForCausalLMWithValueHead if not args.use_seq2seq else AutoModelForSeq2SeqLMWithValueHead
 
