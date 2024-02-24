@@ -19,6 +19,7 @@ import torch
 import tyro
 from accelerate import Accelerator
 from datasets import load_dataset
+from dataset import build_dataset
 from peft import LoraConfig
 from tqdm import tqdm
 from transformers import AutoTokenizer, pipeline
@@ -27,15 +28,13 @@ from trl import AutoModelForCausalLMWithValueHead, AutoModelForSeq2SeqLMWithValu
 from trl.core import LengthSampler
 from trl.import_utils import is_xpu_available
 
-
 tqdm.pandas()
-
 
 @dataclass
 class ScriptArguments:
     ppo_config: PPOConfig = field(
         default_factory=lambda: PPOConfig(
-            model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+            model_name="meta-llama/Llama-2-7b-chat-hf",
             reward_model="text-classification:Hello-SimpleAI/chatgpt-detector-roberta",
             learning_rate=1.41e-5,
             log_with=None,
@@ -75,80 +74,15 @@ sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_si
 
 trl_model_class = AutoModelForCausalLMWithValueHead if not args.use_seq2seq else AutoModelForSeq2SeqLMWithValueHead
 
-
-# Below is an example function to build the dataset. In our case, we use the IMDB dataset
-# from the `datasets` library. One should customize this function to train the model on
-# its own dataset.
-from transformers import AutoTokenizer
-from datasets import load_dataset
-
-def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
-    """
-    Build dataset for training. This builds the dataset from `load_dataset`, one should
-    customize this function to train the model on its own dataset.
-
-    Args:
-        dataset_name (`str`):
-            The name of the dataset to be loaded.
-
-    Returns:
-        dataloader (`torch.utils.data.DataLoader`):
-            The dataloader for the dataset.
-    """
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True, padding_side='left') # padding left for encoder only models
+tokenizer = AutoTokenizer.from_pretrained(args.ppo_config.model_name, padding_side='left', trust_remote_code=True)
+if getattr(tokenizer, "pad_token", None) is None:
     tokenizer.pad_token = tokenizer.eos_token
-
-    ds = load_dataset(dataset_name, split="train")
-    querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
-    ds = ds.add_column('query', querys)
-
-    def prepare_dataset(ds_item):
-        prompt = [
-            {
-                "role": "system",
-                "content": "You are an assistant who gives detailed and long answers",
-            },
-            {
-                "role": "user", 
-                "content": ds_item['query']
-            },
-        ]
-        ds_item['query'] = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
-        ds_item["input_ids"] = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, return_tensors='pt', padding='max_length', max_length=max_length) 
-        # ds_item["query_ids"] = tokenizer.encode(ds_item["query"], padding='max_length', max_length=max_length)
-        return ds_item
-    
-    ds = ds.map(prepare_dataset, batched=False)
-    ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
-    ds = ds.remove_columns(['source', 'conversation'])
-    ds.set_format(type="torch")
-    
-    return ds
-
-tokenizer = AutoTokenizer.from_pretrained(script_args.tokenizer_name)
-# GPT-2 tokenizer has a pad token, but it is not eos_token by default. We need to set it to eos_token.
-# only for this model.
-
-if "llama" in script_args.tokenizer_name:
-    tokenizer.add_special_tokens(
-        {
-            "eos_token": DEFAULT_EOS_TOKEN,
-            "bos_token": DEFAULT_BOS_TOKEN,
-            "unk_token": DEFAULT_UNK_TOKEN,
-            "pad_token": DEFAULT_PAD_TOKEN,
-        }
-    )
-else:
-    tokenizer.pad_token = tokenizer.eos_token
-
 
 # We retrieve the dataloader by calling the `build_dataset` function.
-dataset = build_dataset(args.ppo_config, max_length=100)
-
+dataset = build_dataset(tokenizer)
 
 def collator(data):
     return dict((key, [d[key] for d in data]) for key in data[0])
-
 
 # set seed before initializing value head for deterministic eval
 set_seed(args.ppo_config.seed)
@@ -167,17 +101,12 @@ else:
 model = trl_model_class.from_pretrained(
     args.ppo_config.model_name,
     trust_remote_code=args.trust_remote_code,
-    # device_map=device_map,
+    device_map=device_map,
     # peft_config=peft_config,
     torch_dtype=torch.bfloat16
 )
 print(f"using model: {args.ppo_config.model_name}")
 print(f"with mini-batch: {args.ppo_config.mini_batch_size}")
-
-tokenizer = AutoTokenizer.from_pretrained(args.ppo_config.model_name)
-
-# Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
-tokenizer.pad_token_id = tokenizer.eos_token_id
 
 # We then build the PPOTrainer, passing the model, the reference model, the tokenizer
 ppo_trainer = PPOTrainer(args.ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
@@ -218,12 +147,10 @@ generation_kwargs = {
     "max_new_tokens": 512,
 }
 
-print(f"max new tokens: {generation_kwargs.get('max_new_tokens')}")
-
 for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     query_tensors = batch["input_ids"]
 
-    # Get response from gpt2
+    # Get response from model
     response_tensors, ref_response_tensors = ppo_trainer.generate(
         query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
     )
