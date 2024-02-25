@@ -26,9 +26,9 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser, pipeline
 
 from trl import AutoModelForCausalLMWithValueHead, AutoModelForSeq2SeqLMWithValueHead, PPOConfig, PPOTrainer, set_seed
-from trl.core import LengthSampler
 from trl.import_utils import is_npu_available, is_xpu_available
 
+from dataset import build_dataset
 
 tqdm.pandas()
 
@@ -53,45 +53,13 @@ sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_si
 
 trl_model_class = AutoModelForCausalLMWithValueHead if not args.use_seq2seq else AutoModelForSeq2SeqLMWithValueHead
 
+tokenizer = AutoTokenizer.from_pretrained(ppo_config.model_name, padding_side='left', trust_remote_code=True)
 
-# Below is an example function to build the dataset. In our case, we use the IMDB dataset
-# from the `datasets` library. One should customize this function to train the model on
-# its own dataset.
-def build_dataset(config, query_dataset, input_min_text_length=2, input_max_text_length=8):
-    """
-    Build dataset for training. This builds the dataset from `load_dataset`, one should
-    customize this function to train the model on its own dataset.
-
-    Args:
-        query_dataset (`str`):
-            The name of the dataset to be loaded.
-
-    Returns:
-        dataloader (`torch.utils.data.DataLoader`):
-            The dataloader for the dataset.
-    """
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-    # load imdb with datasets
-    ds = load_dataset(query_dataset, split="train")
-    ds = ds.rename_columns({"text": "review"})
-    ds = ds.filter(lambda x: len(x["review"]) > 200, batched=False)
-
-    input_size = LengthSampler(input_min_text_length, input_max_text_length)
-
-    def tokenize(sample):
-        sample["input_ids"] = tokenizer.encode(sample["review"])[: input_size()]
-        sample["query"] = tokenizer.decode(sample["input_ids"])
-        return sample
-
-    ds = ds.map(tokenize, batched=False)
-    ds.set_format(type="torch")
-    return ds
-
+# Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
+tokenizer.pad_token_id = tokenizer.eos_token_id
 
 # We retrieve the dataloader by calling the `build_dataset` function.
-dataset = build_dataset(ppo_config, ppo_config.query_dataset)
-
+dataset = build_dataset(tokenizer, ppo_config.query_dataset)
 
 def collator(data):
     return {key: [d[key] for d in data] for key in data[0]}
@@ -100,7 +68,7 @@ def collator(data):
 # set seed before initializing value head for deterministic eval
 set_seed(ppo_config.seed)
 
-# Now let's build the model, the reference model, and the tokenizer.
+# Now let's build the model and the reference model
 if not args.use_peft:
     ref_model = trl_model_class.from_pretrained(ppo_config.model_name, trust_remote_code=args.trust_remote_code)
     device_map = None
@@ -122,12 +90,6 @@ model = trl_model_class.from_pretrained(
     device_map=device_map,
     peft_config=peft_config,
 )
-
-
-tokenizer = AutoTokenizer.from_pretrained(ppo_config.model_name)
-
-# Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
-tokenizer.pad_token_id = tokenizer.eos_token_id
 
 # We then build the PPOTrainer, passing the model, the reference model, the tokenizer
 ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
@@ -167,7 +129,7 @@ generation_kwargs = {
     "top_p": 1.0,
     "do_sample": True,
     "pad_token_id": tokenizer.eos_token_id,
-    "max_new_tokens": 32,
+    "max_new_tokens": 356,
 }
 
 for _epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
@@ -177,15 +139,13 @@ for _epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     response_tensors, ref_response_tensors = ppo_trainer.generate(
         query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
     )
-    batch["response"] = tokenizer.batch_decode(response_tensors)
-    batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors)
+    batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
+    batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
     # Compute sentiment score
-    texts = [q + r for q, r in zip(batch["query"], batch["response"])]
-    pipe_outputs = sentiment_pipe(texts, **sent_kwargs)
+    pipe_outputs = sentiment_pipe(batch["response"], **sent_kwargs)
     rewards = [torch.tensor(output[1]["score"]) for output in pipe_outputs]
-    ref_texts = [q + r for q, r in zip(batch["query"], batch["ref_response"])]
-    ref_pipe_outputs = sentiment_pipe(ref_texts, **sent_kwargs)
+    ref_pipe_outputs = sentiment_pipe(batch["ref_response"], **sent_kwargs)
     ref_rewards = [torch.tensor(output[1]["score"]) for output in ref_pipe_outputs]
     batch["ref_rewards"] = ref_rewards
 
