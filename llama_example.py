@@ -47,10 +47,6 @@ class ScriptArguments:
 parser = HfArgumentParser((ScriptArguments, PPOConfig))
 args, ppo_config = parser.parse_args_into_dataclasses()
 
-# We then define the arguments to pass to the sentiment analysis pipeline.
-# We set `return_all_scores` to True to get the sentiment score for each token.
-sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16}
-
 trl_model_class = AutoModelForCausalLMWithValueHead if not args.use_seq2seq else AutoModelForSeq2SeqLMWithValueHead
 
 tokenizer = AutoTokenizer.from_pretrained(ppo_config.model_name, padding_side='left', trust_remote_code=True)
@@ -109,16 +105,16 @@ ds_plugin = ppo_trainer.accelerator.state.deepspeed_plugin
 task, model_name = ppo_config.reward_model.split(":")
 if ds_plugin is not None and ds_plugin.is_zero3_init_enabled():
     with ds_plugin.zero3_init_context_manager(enable=False):
-        sentiment_pipe = pipeline(task, model=model_name, device=device)
+        classifier_pipe = pipeline(task, model=model_name, device=device)
 else:
-    sentiment_pipe = pipeline(task, model=model_name, device=device)
+    classifier_pipe = pipeline(task, model=model_name, device=device)
 
 # Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
-if sentiment_pipe.tokenizer.pad_token_id is None:
-    sentiment_pipe.tokenizer.pad_token_id = tokenizer.pad_token_id
+if classifier_pipe.tokenizer.pad_token_id is None:
+    classifier_pipe.tokenizer.pad_token_id = tokenizer.pad_token_id
 
-if sentiment_pipe.model.config.pad_token_id is None:
-    sentiment_pipe.model.config.pad_token_id = tokenizer.pad_token_id
+if classifier_pipe.model.config.pad_token_id is None:
+    classifier_pipe.model.config.pad_token_id = tokenizer.pad_token_id
 
 # We then define the arguments to pass to the `generate` function. These arguments
 # are passed to the `generate` function of the PPOTrainer, which is a wrapper around
@@ -129,13 +125,23 @@ generation_kwargs = {
     "top_p": 1.0,
     "do_sample": True,
     "pad_token_id": tokenizer.eos_token_id,
-    "max_new_tokens": 356,
+    "max_new_tokens": 512,
+}
+
+# We then define the arguments to pass to the classifier pipeline.
+# We set `return_all_scores` to True to get the score for each token.
+sent_kwargs = {
+    "truncation": True, 
+    "max_length": 512, # base model context length
+    "return_all_scores": True, 
+    "function_to_apply": "none", 
+    "batch_size": ppo_config.mini_batch_size
 }
 
 for _epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     query_tensors = batch["input_ids"]
 
-    # Get response from gpt2
+    # Get response from model
     response_tensors, ref_response_tensors = ppo_trainer.generate(
         query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
     )
@@ -143,10 +149,10 @@ for _epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
     # Compute sentiment score
-    pipe_outputs = sentiment_pipe(batch["response"], **sent_kwargs)
-    rewards = [torch.tensor(output[1]["score"]) for output in pipe_outputs]
-    ref_pipe_outputs = sentiment_pipe(batch["ref_response"], **sent_kwargs)
-    ref_rewards = [torch.tensor(output[1]["score"]) for output in ref_pipe_outputs]
+    pipe_outputs = classifier_pipe(batch["response"], **sent_kwargs)
+    rewards = [torch.tensor(output[0]["score"]) for output in pipe_outputs]
+    ref_pipe_outputs = classifier_pipe(batch["ref_response"], **sent_kwargs)
+    ref_rewards = [torch.tensor(output[0]["score"]) for output in ref_pipe_outputs]
     batch["ref_rewards"] = ref_rewards
 
     # Run PPO step
