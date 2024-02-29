@@ -68,9 +68,16 @@ def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
                 "content": ds_item['query']
             },
         ]
-        ds_item['query'] = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
-        ds_item["input_ids"] = tokenizer.apply_chat_template(prompt, add_generation_prompt=True, padding='max_length', max_length=max_length, return_tensors='pt')[0] # because it returns a list
-        # ds_item["query_ids"] = tokenizer.encode(ds_item["query"], padding='max_length', max_length=max_length)
+        tokens_dict =  tokenizer.apply_chat_template(
+            prompt, 
+            add_generation_prompt=True, 
+            padding='max_length', 
+            max_length=max_length, 
+            return_tensors='pt', 
+            return_dict=True
+        )
+        ds_item["input_ids"] = tokens_dict["input_ids"][0] # because it returns a list
+        ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
         return ds_item
     
     ds = ds.map(prepare_dataset, batched=False)

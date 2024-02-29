@@ -114,14 +114,30 @@ sent_kwargs = {
 }
 
 for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
-    query_tensors = batch["input_ids"]
+    query_tensors = torch.LongTensor([q.tolist() for q in batch['input_ids']]).to('cuda')
+    query_tensors_masks = torch.LongTensor([q.tolist() for q in batch["attention_mask"]]).to('cuda')
 
     # Get response from model
-    response_tensors, ref_response_tensors = ppo_trainer.generate(
-        query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
+    # response_tensors, ref_response_tensors = ppo_trainer.generate(
+    #     query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
+    # )
+    response_tensors = model.generate(
+        query_tensors,
+        attention_mask=query_tensors_masks,
+        return_dict_in_generate=False,
+        **generation_kwargs
     )
-    batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
-    batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
+    ref_response_tensors = ref_model.generate(
+        query_tensors,
+        attention_mask=query_tensors_masks,
+        return_dict_in_generate=False,
+        **generation_kwargs
+    )
+    
+    response_list = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
+    batch["response"] = [r.split('<|assistant|>')[1] for r in response_list] # remove prompt
+    ref_response_list = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
+    batch["ref_response"] = [r.split('<|assistant|>')[1] for r in ref_response_list] # remove prompt
 
     # Compute sentiment score
     pipe_outputs = classifier_pipe(batch["response"], **sent_kwargs)
@@ -131,5 +147,6 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     batch["ref_rewards"] = ref_rewards
 
     # Run PPO step
-    stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+    response_tensors_list = [rt for rt in response_tensors] # ppo_trainer.step expects a list
+    stats = ppo_trainer.step(batch["input_ids"], response_tensors_list, rewards) # batch["input_ids"] for weights upate because you need a list here
     ppo_trainer.log_stats(stats, batch, rewards, columns_to_log=["query", "response", "ref_response", "ref_rewards"])
