@@ -4,7 +4,7 @@ from typing import Optional
 import torch
 from accelerate import Accelerator
 from datasets import load_dataset
-from dataset import build_dataset
+from dataset import build_dataset, build_dataset_for_gemma
 from peft import LoraConfig
 from tqdm import tqdm
 from transformers import AutoTokenizer, pipeline, HfArgumentParser
@@ -35,7 +35,8 @@ if getattr(tokenizer, "pad_token", None) is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 # We retrieve the dataloader by calling the `build_dataset` function.
-dataset = build_dataset(tokenizer)
+# dataset = build_dataset(tokenizer)
+dataset = build_dataset_for_gemma(tokenizer, max_length=125)
 
 def collator(data):
     return dict((key, [d[key] for d in data]) for key in data[0])
@@ -99,7 +100,7 @@ generation_kwargs = {
     "top_k": 0.0,
     "top_p": 1.0,
     "do_sample": True,
-    "pad_token_id": tokenizer.eos_token_id,
+    # "pad_token_id": tokenizer.eos_token_id,
     "max_new_tokens": 512,
 }
 
@@ -114,24 +115,13 @@ sent_kwargs = {
 }
 
 for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
-    query_tensors = torch.LongTensor([q.tolist() for q in batch['input_ids']]).to('cuda')
-    query_tensors_masks = torch.LongTensor([q.tolist() for q in batch["attention_mask"]]).to('cuda')
+    # query_tensors = torch.LongTensor([q.tolist() for q in batch['input_ids']]).to('cuda')
+    # query_tensors_masks = torch.LongTensor([q.tolist() for q in batch["attention_mask"]]).to('cuda')
+    query_tensors = batch['input_ids']
 
     # Get response from model
-    # response_tensors, ref_response_tensors = ppo_trainer.generate(
-    #     query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
-    # )
-    response_tensors = model.generate(
-        query_tensors,
-        attention_mask=query_tensors_masks,
-        return_dict_in_generate=False,
-        **generation_kwargs
-    )
-    ref_response_tensors = ref_model.generate(
-        query_tensors,
-        attention_mask=query_tensors_masks,
-        return_dict_in_generate=False,
-        **generation_kwargs
+    response_tensors, ref_response_tensors = ppo_trainer.generate(
+        query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
     )
     
     response_list = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
