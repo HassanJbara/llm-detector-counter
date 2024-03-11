@@ -124,10 +124,8 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
         query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
     )
     
-    response_list = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
-    batch["response"] = [r.split('<|assistant|>')[1] for r in response_list] # remove prompt
-    ref_response_list = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
-    batch["ref_response"] = [r.split('<|assistant|>')[1] for r in ref_response_list] # remove prompt
+    batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
+    batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
     # Compute sentiment score
     pipe_outputs = classifier_pipe(batch["response"], **sent_kwargs)
