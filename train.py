@@ -2,11 +2,10 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 from peft import LoraConfig
-from accelerate import Accelerator
-from utils import prepare_classifier_pipe, train
+from trl import PPOConfig, PPOTrainer, set_seed
 from transformers import AutoTokenizer, HfArgumentParser
 from dataset import build_dataset, build_dataset_for_gemma
-from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer, set_seed
+from utils import prepare_classifier_pipe, train, build_model
 
 @dataclass
 class ScriptArguments:
@@ -41,27 +40,7 @@ def main(args, ppo_config):
     set_seed(ppo_config.seed)
     
     # build model and ref model
-    if not args.use_peft:
-        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(ppo_config.model_name, trust_remote_code=args.trust_remote_code)
-        device_map = None
-        peft_config = None
-    else:
-        peft_config = LoraConfig(
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-        ref_model = None
-        # Copy the model to each device
-        device_map = {"": Accelerator().local_process_index}
-    
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        ppo_config.model_name,
-        trust_remote_code=args.trust_remote_code,
-        device_map=device_map,
-        peft_config=peft_config,
-    )
+    model, ref_model = build_model(ppo_config.model_name, args)
     
     # PPOTrainer & classifier
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)

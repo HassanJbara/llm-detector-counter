@@ -1,7 +1,9 @@
-from transformers import pipeline
-from trl.import_utils import is_xpu_available
-from tqdm import tqdm
 import torch
+from tqdm import tqdm
+from transformers import pipeline
+from accelerate import Accelerator
+from trl.import_utils import is_xpu_available
+from trl import AutoModelForCausalLMWithValueHead
 
 def prepare_classifier_pipe(ppo_trainer, reward_model):
     # build classifier pipeline
@@ -28,8 +30,33 @@ def prepare_classifier_pipe(ppo_trainer, reward_model):
 
     return classifier_pipe
 
+def build_model(model_name, args):
+    if not args.use_peft:
+        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, trust_remote_code=args.trust_remote_code)
+        device_map = None
+        peft_config = None
+    else:
+        peft_config = LoraConfig(
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        ref_model = None
+        # Copy the model to each device
+        device_map = {"": Accelerator().local_process_index}
+    
+    model = AutoModelForCausalLMWithValueHead.from_pretrained(
+        model_name,
+        trust_remote_code=args.trust_remote_code,
+        device_map=device_map,
+        peft_config=peft_config,
+    )
+
+    return model, ref_model
+
 def train(ppo_trainer, classifier_pipe, tokenizer, generation_kwargs, sent_kwargs):
-    tqdm.pandas() # may need to be in the beginning of the file, needs testing
+    tqdm.pandas()
     
     for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
         query_tensors = batch['input_ids']
