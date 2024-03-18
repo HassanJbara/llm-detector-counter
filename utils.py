@@ -55,7 +55,29 @@ def build_model(model_name, args):
 
     return model, ref_model
 
-def train(ppo_trainer, classifier_pipe, tokenizer, generation_kwargs, sent_kwargs):
+def compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight, sent_kwargs):
+    classifier_output = classifier_pipe(batch["response"], **sent_kwargs)
+    ref_classifier_output = classifier_pipe(batch["ref_response"], **sent_kwargs)
+    human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output]
+    ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output]
+
+    query_answer_pairs = [{"text": b["query"], "text_pair": b["response"]} for b in batch]
+    ref_query_answer_pairs = [{"text": b["query"], "text_pair": b["ref_response"]} for b in batch]
+    hf_scores = hf_pipe(query_answer_pairs, **sent_kwargs)
+    ref_hf_scores = hf_pipe(ref_query_answer_pairs, **sent_kwargs)
+
+    rewards, ref_rewards = [], []
+
+    for i in range(len(batch)):
+        reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*human_scores[i]
+        ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*ref_human_scores[i]
+        
+        rewards.append(reward)
+        ref_rewards.append(ref_reward)
+    
+    return rewards, ref_rewards
+
+def train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, hf_model_weight, generation_kwargs, sent_kwargs):
     tqdm.pandas()
     
     for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
@@ -69,12 +91,8 @@ def train(ppo_trainer, classifier_pipe, tokenizer, generation_kwargs, sent_kwarg
         batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
         batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
-        # Compute sentiment score
-        pipe_outputs = classifier_pipe(batch["response"], **sent_kwargs)
-        rewards = [torch.tensor(output[0]["score"]) for output in pipe_outputs]
-        ref_pipe_outputs = classifier_pipe(batch["ref_response"], **sent_kwargs)
-        ref_rewards = [torch.tensor(output[0]["score"]) for output in ref_pipe_outputs]
-        batch["ref_rewards"] = ref_rewards
+        # Compute reward
+        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight)
 
         # Run PPO step
         response_tensors_list = [rt for rt in response_tensors] # ppo_trainer.step expects a list

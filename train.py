@@ -11,7 +11,9 @@ from utils import prepare_classifier_pipe, train, build_model
 class ScriptArguments:
     trust_remote_code: bool = field(default=True, metadata={"help": "Enable `trust_remote_code`"})
     query_max_length: Optional[int] = field(default=125, metadata={"help": "allowed max length of queries in dataset"}) 
-
+    hf_model: Optional[str] = field(default=None, metadata={"help": "model used to rate responses on helpfulness"})
+    hf_model_weight: Optional[float] = field(default=0.5, metadata={"help": "weight given to the rewards of the hf_model"})
+    
     # LoraConfig
     use_peft: bool = field(default=False, metadata={"help": "whether to use peft"})
     lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
@@ -46,7 +48,9 @@ def main(args, ppo_config):
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
     
     classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model)
-    
+    if args.hf_model:
+        hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model)
+
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {
         "min_length": -1,
@@ -67,7 +71,7 @@ def main(args, ppo_config):
         "batch_size": ppo_config.mini_batch_size
     }
     
-    train(ppo_trainer, classifier_pipe, tokenizer, generation_kwargs, sent_kwargs)
+    train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, args.hf_model_weight, generation_kwargs, sent_kwargs)
 
 if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, PPOConfig))
