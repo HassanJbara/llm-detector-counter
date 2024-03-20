@@ -61,21 +61,26 @@ def compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight, sent_kwargs
     human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output]
     ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output]
 
-    query_answer_pairs = [{"text": b["query"], "text_pair": b["response"]} for b in batch]
-    ref_query_answer_pairs = [{"text": b["query"], "text_pair": b["ref_response"]} for b in batch]
-    hf_scores = hf_pipe(query_answer_pairs, **sent_kwargs)
-    ref_hf_scores = hf_pipe(ref_query_answer_pairs, **sent_kwargs)
+    if hf_pipe:
+        query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["response"]))]
+        ref_query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["ref_response"]))]
+        hf_outputs = hf_pipe(query_answer_pairs, **sent_kwargs)
+        ref_hf_outputs = hf_pipe(ref_query_answer_pairs, **sent_kwargs)
+        hf_scores = [torch.tensor(output[0]["score"]) for output in hf_outputs]
+        ref_hf_scores = [torch.tensor(output[0]["score"]) for output in ref_hf_outputs]
 
-    rewards, ref_rewards = [], []
+        rewards, ref_rewards = [], []
 
-    for i in range(len(batch)):
-        reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*human_scores[i]
-        ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*ref_human_scores[i]
-        
-        rewards.append(reward)
-        ref_rewards.append(ref_reward)
+        for i in range(len(batch["query"])):
+            reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*human_scores[i]
+            ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*ref_human_scores[i]
+            
+            rewards.append(reward)
+            ref_rewards.append(ref_reward)
     
-    return rewards, ref_rewards
+        return rewards, ref_rewards
+    else:
+        return human_scores, ref_human_scores
 
 def train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, hf_model_weight, generation_kwargs, sent_kwargs):
     tqdm.pandas()
@@ -92,7 +97,7 @@ def train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, hf_model_weight, gen
         batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
         # Compute reward
-        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight)
+        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight, sent_kwargs)
 
         # Run PPO step
         response_tensors_list = [rt for rt in response_tensors] # ppo_trainer.step expects a list

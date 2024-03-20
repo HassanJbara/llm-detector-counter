@@ -48,6 +48,7 @@ def main(args, ppo_config):
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
     
     classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model)
+    hf_pipe = None
     if args.hf_model:
         hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model)
 
