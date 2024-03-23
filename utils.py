@@ -1,13 +1,16 @@
 import torch
 from tqdm import tqdm
-from transformers import pipeline
+from transformers import pipeline, QuantoConfig
 from accelerate import Accelerator
 from trl.import_utils import is_xpu_available
 from trl import AutoModelForCausalLMWithValueHead
+# from unsloth import FastLanguageModel
+from accelerate.utils import DummyOptim, DummyScheduler
+from peft import LoraConfig
 
-def prepare_classifier_pipe(ppo_trainer, reward_model):
+def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
     # build classifier pipeline
-    device = ppo_trainer.accelerator.device
+    device = device if device else ppo_trainer.accelerator.device
     if ppo_trainer.accelerator.num_processes == 1:
         if is_xpu_available():
             device = "xpu:0"
@@ -31,11 +34,11 @@ def prepare_classifier_pipe(ppo_trainer, reward_model):
     return classifier_pipe
 
 def build_model(model_name, args):
-    if not args.use_peft:
-        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, trust_remote_code=args.trust_remote_code)
-        device_map = None
-        peft_config = None
-    else:
+    quantization_config = None
+    if args.quantize:
+        quantization_config = QuantoConfig(weights="int8")
+        
+    if args.use_peft:
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
@@ -45,15 +48,51 @@ def build_model(model_name, args):
         ref_model = None
         # Copy the model to each device
         device_map = {"": Accelerator().local_process_index}
+    else:
+        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            model_name, 
+            trust_remote_code=args.trust_remote_code, 
+            quantization_config=quantization_config
+        )
+        device_map = None
+        peft_config = None
     
     model = AutoModelForCausalLMWithValueHead.from_pretrained(
         model_name,
         trust_remote_code=args.trust_remote_code,
         device_map=device_map,
         peft_config=peft_config,
+        quantization_config=quantization_config
     )
 
     return model, ref_model
+
+def prepare_optim_and_scheduler(model):
+    optimizer, lr_scheduler = None, None
+    accelerator = Accelerator()
+    
+    if accelerator.state.deepspeed_plugin is None:
+        return optimizer, lr_scheduler
+    if "optimizer" in accelerator.state.deepspeed_plugin.deepspeed_config:
+        optimizer = DummyOptim(model.parameters())
+    if "scheduler" in accelerator.state.deepspeed_plugin.deepspeed_config:
+        lr_scheduler = DummyScheduler(optimizer)
+
+    return optimizer, lr_scheduler
+    
+# def build_model_unsloth(model_name, load_in_4bit, dtype=None):
+#     max_seq_length = 1024 # Choose any! We auto support RoPE Scaling internally!
+#     # dtype = torch.bfloat16 # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
+#     # load_in_4bit = False # Use 4bit quantization to reduce memory usage. Can be False.
+    
+#     model, _ = FastLanguageModel.from_pretrained(
+#         model_name = model_name,
+#         max_seq_length = max_seq_length,
+#         dtype = dtype,
+#         load_in_4bit = load_in_4bit,
+#     )
+
+#     return model
 
 def compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight, sent_kwargs):
     classifier_output = classifier_pipe(batch["response"], **sent_kwargs)

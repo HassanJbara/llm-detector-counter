@@ -1,11 +1,10 @@
 from typing import Optional
 from dataclasses import dataclass, field
 
-from peft import LoraConfig
 from trl import PPOConfig, PPOTrainer, set_seed
 from transformers import AutoTokenizer, HfArgumentParser
 from dataset import build_dataset, build_dataset_for_gemma
-from utils import prepare_classifier_pipe, train, build_model
+from utils import prepare_classifier_pipe, train, build_model, prepare_optim_and_scheduler
 
 @dataclass
 class ScriptArguments:
@@ -13,6 +12,7 @@ class ScriptArguments:
     query_max_length: Optional[int] = field(default=125, metadata={"help": "allowed max length of queries in dataset"}) 
     hf_model: Optional[str] = field(default=None, metadata={"help": "model used to rate responses on helpfulness"})
     hf_model_weight: Optional[float] = field(default=0.5, metadata={"help": "weight given to the rewards of the hf_model"})
+    quantize: Optional[bool] = field(default=False, metadata={"help": "load model in 8 bits"}) # currently does not work due to cpu offloading
     
     # LoraConfig
     use_peft: bool = field(default=False, metadata={"help": "whether to use peft"})
@@ -45,12 +45,14 @@ def main(args, ppo_config):
     model, ref_model = build_model(ppo_config.model_name, args)
     
     # PPOTrainer & classifier
-    ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
+    optimizer, lr_scheduler = prepare_optim_and_scheduler(model)
+    ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, 
+                             data_collator=collator, optimizer=optimizer, lr_scheduler=lr_scheduler)
     
-    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model)
+    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:0')
     hf_pipe = None
     if args.hf_model:
-        hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model)
+        hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:1')
 
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {
