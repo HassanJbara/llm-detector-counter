@@ -13,6 +13,7 @@ class ScriptArguments:
     hf_model: Optional[str] = field(default=None, metadata={"help": "model used to rate responses on helpfulness"})
     hf_model_weight: Optional[float] = field(default=0.5, metadata={"help": "weight given to the rewards of the hf_model"})
     quantize: Optional[bool] = field(default=False, metadata={"help": "load model in 8 bits"}) # currently does not work due to cpu offloading
+    normal_training: Optional[bool] = field(default=False, metadata={"help": "run normal training with a human feedback model"})
     
     # LoraConfig
     use_peft: bool = field(default=False, metadata={"help": "whether to use peft"})
@@ -50,9 +51,7 @@ def main(args, ppo_config):
                              data_collator=collator, optimizer=optimizer, lr_scheduler=lr_scheduler)
     
     classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:0')
-    hf_pipe = None
-    if args.hf_model:
-        hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:1')
+    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:1') if args.hf_model else None
 
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {
@@ -74,7 +73,7 @@ def main(args, ppo_config):
         "batch_size": ppo_config.mini_batch_size
     }
     
-    train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, args.hf_model_weight, generation_kwargs, sent_kwargs)
+    train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe, args.hf_model_weight, args.normal_training)
 
 if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, PPOConfig))

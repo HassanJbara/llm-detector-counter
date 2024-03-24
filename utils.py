@@ -94,34 +94,47 @@ def prepare_optim_and_scheduler(model):
 
 #     return model
 
-def compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight, sent_kwargs):
+def compute_human_scores(batch, classifier_pipe, sent_kwargs):
     classifier_output = classifier_pipe(batch["response"], **sent_kwargs)
     ref_classifier_output = classifier_pipe(batch["ref_response"], **sent_kwargs)
     human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output]
     ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output]
 
-    if hf_pipe:
-        query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["response"]))]
-        ref_query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["ref_response"]))]
-        hf_outputs = hf_pipe(query_answer_pairs, **sent_kwargs)
-        ref_hf_outputs = hf_pipe(ref_query_answer_pairs, **sent_kwargs)
-        hf_scores = [torch.tensor(output[0]["score"]) for output in hf_outputs]
-        ref_hf_scores = [torch.tensor(output[0]["score"]) for output in ref_hf_outputs]
+    return humans_scores, ref_human_scores
 
-        rewards, ref_rewards = [], []
+def compute_hf_scores(batch, hf_pipe, sent_kwargs):
+    query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["response"]))]
+    ref_query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["ref_response"]))]
+    hf_outputs = hf_pipe(query_answer_pairs, **sent_kwargs)
+    ref_hf_outputs = hf_pipe(ref_query_answer_pairs, **sent_kwargs)
+    hf_scores = [torch.tensor(output[0]["score"]) for output in hf_outputs]
+    ref_hf_scores = [torch.tensor(output[0]["score"]) for output in ref_hf_outputs]
 
-        for i in range(len(batch["query"])):
-            reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*human_scores[i]
-            ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*ref_human_scores[i]
-            
-            rewards.append(reward)
-            ref_rewards.append(ref_reward)
+    return hf_scores, ref_hf_scores
     
-        return rewards, ref_rewards
-    else:
-        return human_scores, ref_human_scores
+def compute_reward(batch, classifier_pipe, sent_kwargs, normal_training=False, hf_pipe=None, hf_model_weight=None):
+    if normal_training:
+        return compute_hf_scores(batch, classifier_pipe, sent_kwargs)
 
-def train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, hf_model_weight, generation_kwargs, sent_kwargs):
+    else:
+        human_scores, ref_human_scores = compute_human_scores(batch, classifier_pipe, sent_kwargs)
+
+        if hf_pipe:
+            hf_scores, ref_hf_scores = compute_hf_scores(batch, classifier_pipe, sent_kwargs)
+            rewards, ref_rewards = [], []
+    
+            for i in range(len(batch["query"])):
+                reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*human_scores[i]
+                ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*ref_human_scores[i]
+                
+                rewards.append(reward)
+                ref_rewards.append(ref_reward)
+        
+            return rewards, ref_rewards
+        else:
+            return human_scores, ref_human_scores
+
+def train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe=None, hf_model_weight=None, normal_training=False):
     tqdm.pandas()
     
     for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
@@ -136,7 +149,7 @@ def train(ppo_trainer, tokenizer, classifier_pipe, hf_pipe, hf_model_weight, gen
         batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
         # Compute reward
-        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, hf_pipe, hf_model_weight, sent_kwargs)
+        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, sent_kwargs, normal_training, hf_pipe, hf_model_weight)
 
         # Run PPO step
         response_tensors_list = [rt for rt in response_tensors] # ppo_trainer.step expects a list
