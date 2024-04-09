@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 from trl import PPOConfig, PPOTrainer, set_seed
 from transformers import AutoTokenizer, HfArgumentParser
-from dataset import build_dataset, build_dataset_for_gemma
+from dataset import build_dataset, build_dataset_with_system_prompt
 from utils import prepare_classifier_pipe, train, build_model, prepare_optim_and_scheduler
 
 @dataclass
@@ -12,7 +12,6 @@ class ScriptArguments:
     query_max_length: Optional[int] = field(default=125, metadata={"help": "allowed max length of queries in dataset"}) 
     hf_model: Optional[str] = field(default=None, metadata={"help": "model used to rate responses on helpfulness"})
     hf_model_weight: Optional[float] = field(default=0.5, metadata={"help": "weight given to the rewards of the hf_model"})
-    quantize: Optional[bool] = field(default=False, metadata={"help": "load model in 8 bits"}) # currently does not work due to cpu offloading
     normal_training: Optional[bool] = field(default=False, metadata={"help": "run normal training with a human feedback model"})
     
     # LoraConfig
@@ -20,7 +19,14 @@ class ScriptArguments:
     lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
     lora_r: Optional[int] = field(default=16, metadata={"help": "the lora r parameter"})
 
+    # model config
+    quantize: Optional[bool] = field(default=False, metadata={"help": "load model in 8 bits"}) # currently does not work due to cpu offloading
+    flash_attn: Optional[bool] = field(default=True, metadata={"help": "load models with flash attention"})
+    
+
 def main(args, ppo_config):
+    assert not (args.quantize and args.flash_attn), "Quantization can not be used with flash attention 2!"
+    
     # tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         ppo_config.model_name, 
@@ -31,10 +37,10 @@ def main(args, ppo_config):
         tokenizer.pad_token = tokenizer.eos_token
     
     # dataset & dataloader
-    if 'gemma' in ppo_config.model_name:
-        dataset = build_dataset_for_gemma(tokenizer, max_length=args.query_max_length)
-    else:
+    if 'gemma' or 'stablelm' in ppo_config.model_name:
         dataset = build_dataset(tokenizer, max_length=args.query_max_length)
+    else:
+        dataset = build_dataset_with_system_prompt(tokenizer, max_length=args.query_max_length)
     
     def collator(data):
         return dict((key, [d[key] for d in data]) for key in data[0])
@@ -50,8 +56,8 @@ def main(args, ppo_config):
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, 
                              data_collator=collator, optimizer=optimizer, lr_scheduler=lr_scheduler)
     
-    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:0')
-    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:1') if args.hf_model else None
+    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:2')
+    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:3') if args.hf_model else None
 
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {

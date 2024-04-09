@@ -22,7 +22,7 @@ def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
         with ds_plugin.zero3_init_context_manager(enable=False):
             classifier_pipe = pipeline(task, model=model_name, device=device)
     else:
-        classifier_pipe = pipeline(task, model=model_name, device=device)
+        classifier_pipe = pipeline(task, model=model_name, device=device, torch_dtype=torch.bfloat16)
     
     # Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
     if classifier_pipe.tokenizer.pad_token_id is None:
@@ -34,9 +34,9 @@ def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
     return classifier_pipe
 
 def build_model(model_name, args):
-    quantization_config = None
-    if args.quantize:
-        quantization_config = QuantoConfig(weights="int8")
+    quantization_config = QuantoConfig(weights="int8") if args.quantize else None
+    flash_attn_config = "flash_attention_2" if args.flash_attn else None
+    torch_dtype= torch.bfloat16 if args.flash_attn else None
         
     if args.use_peft:
         peft_config = LoraConfig(
@@ -52,7 +52,9 @@ def build_model(model_name, args):
         ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
             model_name, 
             trust_remote_code=args.trust_remote_code, 
-            quantization_config=quantization_config
+            quantization_config=quantization_config,
+            attn_implementation=flash_attn_config,
+            torch_dtype=torch_dtype, 
         )
         device_map = None
         peft_config = None
@@ -62,7 +64,9 @@ def build_model(model_name, args):
         trust_remote_code=args.trust_remote_code,
         device_map=device_map,
         peft_config=peft_config,
-        quantization_config=quantization_config
+        quantization_config=quantization_config,
+        attn_implementation=flash_attn_config,
+        torch_dtype=torch_dtype,
     )
 
     return model, ref_model
@@ -100,7 +104,7 @@ def compute_human_scores(batch, classifier_pipe, sent_kwargs):
     human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output]
     ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output]
 
-    return humans_scores, ref_human_scores
+    return human_scores, ref_human_scores
 
 def compute_hf_scores(batch, hf_pipe, sent_kwargs):
     query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["response"]))]

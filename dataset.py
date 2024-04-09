@@ -2,49 +2,47 @@ import torch
 from transformers import AutoTokenizer
 from datasets import load_dataset
 
-def build_dataset_for_gemma(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
-    """
-    Build dataset for training.
+def prepare_dataset_with_system_prompt(ds_item, tokenizer, max_length):
+    prompt = [
+        {
+            "role": "system",
+            "content": "You are an assistant who gives detailed and long answers",
+        },
+        {
+            "role": "user", 
+            "content": ds_item['query']
+        },
+    ]
+    tokens_dict =  tokenizer.apply_chat_template(
+        prompt, 
+        add_generation_prompt=True, 
+        padding='max_length', 
+        max_length=max_length, 
+        return_tensors='pt', 
+        return_dict=True
+    )
+    ds_item["input_ids"] = tokens_dict["input_ids"][0] # because it returns a list
+    ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
+    return ds_item
 
-    Args:
-        dataset_name (`str`):
-            The name of the dataset to be loaded.
-
-    Returns:
-        dataloader (`torch.utils.data.DataLoader`):
-            The dataloader for the dataset.
-    """
-
-    ds = load_dataset(dataset_name, split="train")
-    querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
-    ds = ds.add_column('query', querys)
-
-    def prepare_dataset(ds_item):
-        prompt = [
-            {
-                "role": "user", 
-                "content": ds_item['query']
-            },
-        ]
-        tokens_dict =  tokenizer.apply_chat_template(
-            prompt, 
-            add_generation_prompt=True, 
-            padding='max_length', 
-            max_length=max_length, 
-            return_tensors='pt', 
-            return_dict=True
-        )
-        ds_item["input_ids"] = tokens_dict["input_ids"][0] # because it returns a list
-        ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
-        return ds_item
-    
-    ds = ds.map(prepare_dataset, batched=False)
-    ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
-    ds = ds.remove_columns(['source', 'conversation'])
-    ds.set_format(type="torch")
-    
-    return ds
-
+def prepare_dataset(ds_item, tokenizer, max_length):
+    prompt = [
+        {
+            "role": "user", 
+            "content": ds_item['query']
+        },
+    ]
+    tokens_dict =  tokenizer.apply_chat_template(
+        prompt, 
+        add_generation_prompt=True, 
+        padding='max_length', 
+        max_length=max_length, 
+        return_tensors='pt',
+        return_dict=True
+    )
+    ds_item["input_ids"] = tokens_dict["input_ids"][0] # because it returns a list
+    ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
+    return ds_item
 
 def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
     """
@@ -62,31 +60,33 @@ def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
     ds = load_dataset(dataset_name, split="train")
     querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
     ds = ds.add_column('query', querys)
-
-    def prepare_dataset(ds_item):
-        prompt = [
-            {
-                "role": "system",
-                "content": "You are an assistant who gives detailed and long answers",
-            },
-            {
-                "role": "user", 
-                "content": ds_item['query']
-            },
-        ]
-        tokens_dict =  tokenizer.apply_chat_template(
-            prompt, 
-            add_generation_prompt=True, 
-            padding='max_length', 
-            max_length=max_length, 
-            return_tensors='pt', 
-            return_dict=True
-        )
-        ds_item["input_ids"] = tokens_dict["input_ids"][0] # because it returns a list
-        ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
-        return ds_item
     
-    ds = ds.map(prepare_dataset, batched=False)
+    ds = ds.map(lambda x: prepare_dataset(x, tokenizer, max_length), batched=False)
+    ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
+    ds = ds.remove_columns(['source', 'conversation'])
+    ds.set_format(type="torch")
+    
+    return ds
+
+
+def build_dataset_with_system_prompt(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
+    """
+    Build dataset for training.
+
+    Args:
+        dataset_name (`str`):
+            The name of the dataset to be loaded.
+
+    Returns:
+        dataloader (`torch.utils.data.DataLoader`):
+            The dataloader for the dataset.
+    """
+
+    ds = load_dataset(dataset_name, split="train")
+    querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
+    ds = ds.add_column('query', querys)
+    
+    ds = ds.map(lambda x: prepare_dataset_with_system_prompt(x, tokenizer, max_length), batched=False)
     ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
     ds = ds.remove_columns(['source', 'conversation'])
     ds.set_format(type="torch")
