@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 from trl import PPOConfig, PPOTrainer, set_seed
 from transformers import AutoTokenizer, HfArgumentParser
-from dataset import build_dataset, build_dataset_with_system_prompt
+from dataset import build_dataset
 from utils import prepare_classifier_pipe, train, build_model, prepare_optim_and_scheduler
 
 @dataclass
@@ -26,6 +26,7 @@ class ScriptArguments:
 
 def main(args, ppo_config):
     assert not (args.quantize and args.flash_attn), "Quantization can not be used with flash attention 2!"
+    dataset_name = ppo_config.query_dataset if ppo_config.query_dataset else "LDJnr/Pure-Dove"
     
     # tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
@@ -38,9 +39,9 @@ def main(args, ppo_config):
     
     # dataset & dataloader
     if 'gemma' or 'stablelm' in ppo_config.model_name:
-        dataset = build_dataset(tokenizer, max_length=args.query_max_length)
+        dataset = build_dataset(tokenizer, dataset_name=dataset_name, max_length=args.query_max_length)
     else:
-        dataset = build_dataset_with_system_prompt(tokenizer, max_length=args.query_max_length)
+        dataset = build_dataset_with_system_prompt(tokenizer, dataset_name=dataset_name, max_length=args.query_max_length)
     
     def collator(data):
         return dict((key, [d[key] for d in data]) for key in data[0])

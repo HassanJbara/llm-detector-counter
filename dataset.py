@@ -44,7 +44,7 @@ def prepare_dataset(ds_item, tokenizer, max_length):
     ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
     return ds_item
 
-def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
+def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300, sys_prompt=False):
     """
     Build dataset for training.
 
@@ -58,37 +58,18 @@ def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
     """
 
     ds = load_dataset(dataset_name, split="train")
-    querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
-    ds = ds.add_column('query', querys)
     
-    ds = ds.map(lambda x: prepare_dataset(x, tokenizer, max_length), batched=False)
+    if "dove" in dataset_name:
+        querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
+        ds = ds.remove_columns(['source', 'conversation'])
+        ds = ds.add_column('query', querys)
+
+    if sys_prompt:
+        ds = ds.map(lambda x: prepare_dataset_with_system_prompt(x, tokenizer, max_length), batched=False)
+    else:
+        ds = ds.map(lambda x: prepare_dataset(x, tokenizer, max_length), batched=False)
+
     ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
-    ds = ds.remove_columns(['source', 'conversation'])
-    ds.set_format(type="torch")
-    
-    return ds
-
-
-def build_dataset_with_system_prompt(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300):
-    """
-    Build dataset for training.
-
-    Args:
-        dataset_name (`str`):
-            The name of the dataset to be loaded.
-
-    Returns:
-        dataloader (`torch.utils.data.DataLoader`):
-            The dataloader for the dataset.
-    """
-
-    ds = load_dataset(dataset_name, split="train")
-    querys = [ds_item.get('conversation')[0].get('input') for ds_item in ds]
-    ds = ds.add_column('query', querys)
-    
-    ds = ds.map(lambda x: prepare_dataset_with_system_prompt(x, tokenizer, max_length), batched=False)
-    ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
-    ds = ds.remove_columns(['source', 'conversation'])
     ds.set_format(type="torch")
     
     return ds

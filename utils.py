@@ -22,7 +22,7 @@ def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
         with ds_plugin.zero3_init_context_manager(enable=False):
             classifier_pipe = pipeline(task, model=model_name, device=device)
     else:
-        classifier_pipe = pipeline(task, model=model_name, device=device, torch_dtype=torch.bfloat16)
+        classifier_pipe = pipeline(task, model=model_name, device=device)
     
     # Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
     if classifier_pipe.tokenizer.pad_token_id is None:
