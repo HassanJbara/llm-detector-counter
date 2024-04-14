@@ -124,7 +124,7 @@ def compute_reward(batch, classifier_pipe, sent_kwargs, normal_training=False, h
         human_scores, ref_human_scores = compute_human_scores(batch, classifier_pipe, sent_kwargs)
 
         if hf_pipe:
-            hf_scores, ref_hf_scores = compute_hf_scores(batch, classifier_pipe, sent_kwargs)
+            hf_scores, ref_hf_scores = compute_hf_scores(batch, hf_pipe, sent_kwargs)
             rewards, ref_rewards = [], []
     
             for i in range(len(batch["query"])):
