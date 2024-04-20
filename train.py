@@ -13,6 +13,7 @@ class ScriptArguments:
     hf_model: Optional[str] = field(default=None, metadata={"help": "model used to rate responses on helpfulness"})
     hf_model_weight: Optional[float] = field(default=0.5, metadata={"help": "weight given to the rewards of the hf_model"})
     normal_training: Optional[bool] = field(default=False, metadata={"help": "run normal training with a human feedback model"})
+    synced_gpus: Optional[bool] = field(default=False, metadata={"help": "activate this flag when using Deepspeed ZeRO Stage 3"})
     
     # LoraConfig
     use_peft: bool = field(default=False, metadata={"help": "whether to use peft"})
@@ -68,6 +69,7 @@ def main(args, ppo_config):
         "do_sample": True,
         # "pad_token_id": tokenizer.eos_token_id,
         "max_new_tokens": 512,
+        "synced_gpus": args.synced_gpus
     }
     
     # classifier pipeline arguments.
