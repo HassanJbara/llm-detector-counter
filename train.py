@@ -23,7 +23,7 @@ class ScriptArguments:
     # model config
     quantize: Optional[bool] = field(default=False, metadata={"help": "load model in 8 bits"}) # currently does not work due to cpu offloading
     flash_attn: Optional[bool] = field(default=True, metadata={"help": "load models with flash attention"})
-    
+
 
 def main(args, ppo_config):
     assert not (args.quantize and args.flash_attn), "Quantization can not be used with flash attention 2!"
@@ -58,8 +58,8 @@ def main(args, ppo_config):
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, 
                              data_collator=collator, optimizer=optimizer, lr_scheduler=lr_scheduler)
     
-    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:2')
-    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:3') if args.hf_model else None
+    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:0')
+    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:1') if args.hf_model else None
 
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {
@@ -77,7 +77,8 @@ def main(args, ppo_config):
     sent_kwargs = {
         "truncation": True, 
         "max_length": 512, # base model context length
-        "return_all_scores": True, 
+        # "return_all_scores": True, # deprecated 
+        "top_k": None,
         "function_to_apply": "none", 
         "batch_size": ppo_config.mini_batch_size
     }

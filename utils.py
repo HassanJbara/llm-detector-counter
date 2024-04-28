@@ -98,6 +98,11 @@ def prepare_optim_and_scheduler(model):
 
 #     return model
 
+def word_count(text):
+  return len(re.findall(r'\w+', text))
+
+  return text_len - query_len
+
 def compute_human_scores(batch, classifier_pipe, sent_kwargs):
     classifier_output = classifier_pipe(batch["response"], **sent_kwargs)
     ref_classifier_output = classifier_pipe(batch["ref_response"], **sent_kwargs)
@@ -128,8 +133,10 @@ def compute_reward(batch, classifier_pipe, sent_kwargs, normal_training=False, h
             rewards, ref_rewards = [], []
     
             for i in range(len(batch["query"])):
-                reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*human_scores[i]
-                ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*ref_human_scores[i]
+                normalized_human_score = (1/256) * human_scores[i] # 256 is half the max length of the response
+                normalized_ref_human_score = (1/256) * ref_human_scores[i] # 256 is half the max length of the response
+                reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*normalized_human_score
+                ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*normalized_ref_human_score
                 
                 rewards.append(reward)
                 ref_rewards.append(ref_reward)
