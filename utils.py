@@ -1,6 +1,6 @@
 import torch
 from tqdm import tqdm
-from transformers import pipeline, QuantoConfig
+from transformers import pipeline, QuantoConfig, AutoTokenizer, AutoModelForCausalLM
 from accelerate import Accelerator
 from trl.import_utils import is_xpu_available
 from trl import AutoModelForCausalLMWithValueHead
@@ -34,6 +34,8 @@ def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
     return classifier_pipe
 
 def build_model(model_name, args):
+    assert not (args.quantize and args.flash_attn), "can not use quantization and flash-attn at the same time!"
+    
     quantization_config = QuantoConfig(weights="int8") if args.quantize else None
     flash_attn_config = "flash_attention_2" if args.flash_attn else None
     torch_dtype= torch.bfloat16 if args.flash_attn else None
@@ -71,6 +73,23 @@ def build_model(model_name, args):
 
     return model, ref_model
 
+def build_model_for_benchmark(model_name: str, quantize: bool = False, flash_attn: bool = True, device="cuda:0"):
+    assert not (quantize and flash_attn), "please use either quantization or flash_attn, not both!"
+    
+    quantization_config = BitsAndBytesConfig(load_in_8bit=True) if quantize else None
+    dtype = torch.bfloat16 if flash_attn else None 
+    attn = "flash_attention_2" if flash_attn else None
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name,
+                                                 quantization_config=quantization_config, # do not use with flash_attn2
+                                                 torch_dtype=dtype,
+                                                 attn_implementation=attn,
+                                                 trust_remote_code=True
+                                                ).to(device)
+
+    return model, tokenizer
+
 def prepare_optim_and_scheduler(model):
     optimizer, lr_scheduler = None, None
     accelerator = Accelerator()
@@ -106,8 +125,8 @@ def word_count(text):
 def compute_human_scores(batch, classifier_pipe, sent_kwargs):
     classifier_output = classifier_pipe(batch["response"], **sent_kwargs)
     ref_classifier_output = classifier_pipe(batch["ref_response"], **sent_kwargs)
-    human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output]
-    ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output]
+    human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output] # this is WRONG! first label not always == 'human'!!!
+    ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output] # this is WRONG! first label not always == 'human'!!!
 
     return human_scores, ref_human_scores
 

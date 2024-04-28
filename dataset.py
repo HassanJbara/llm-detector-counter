@@ -2,7 +2,7 @@ import torch
 from transformers import AutoTokenizer
 from datasets import load_dataset
 
-def prepare_dataset_with_system_prompt(ds_item, tokenizer, max_length):
+def prepare_dataset_with_system_prompt(ds_item, tokenizer, max_length, padding="max_length"):
     prompt = [
         {
             "role": "system",
@@ -16,7 +16,7 @@ def prepare_dataset_with_system_prompt(ds_item, tokenizer, max_length):
     tokens_dict =  tokenizer.apply_chat_template(
         prompt, 
         add_generation_prompt=True, 
-        padding='max_length', 
+        padding=padding, 
         max_length=max_length, 
         return_tensors='pt', 
         return_dict=True
@@ -25,7 +25,7 @@ def prepare_dataset_with_system_prompt(ds_item, tokenizer, max_length):
     ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
     return ds_item
 
-def prepare_dataset(ds_item, tokenizer, max_length):
+def prepare_dataset(ds_item, tokenizer, max_length, padding="max_length"):
     prompt = [
         {
             "role": "user", 
@@ -35,7 +35,7 @@ def prepare_dataset(ds_item, tokenizer, max_length):
     tokens_dict =  tokenizer.apply_chat_template(
         prompt, 
         add_generation_prompt=True, 
-        padding='max_length', 
+        padding=padding, 
         max_length=max_length, 
         return_tensors='pt',
         return_dict=True
@@ -44,7 +44,12 @@ def prepare_dataset(ds_item, tokenizer, max_length):
     ds_item["attention_mask"] = tokens_dict["attention_mask"][0] # because it returns a list
     return ds_item
 
-def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300, sys_prompt=False):
+def build_dataset(tokenizer, 
+                  dataset_name:str = "LDJnr/Pure-Dove", 
+                  max_length:int =300, 
+                  sys_prompt:bool = False, 
+                  padding: str | bool = "max_length", 
+                  sys_prompt_text:str = "You are an assistant who gives detailed and long answers"):
     """
     Build dataset for training.
 
@@ -65,9 +70,9 @@ def build_dataset(tokenizer, dataset_name="LDJnr/Pure-Dove", max_length=300, sys
         ds = ds.add_column('query', querys)
 
     if sys_prompt:
-        ds = ds.map(lambda x: prepare_dataset_with_system_prompt(x, tokenizer, max_length), batched=False)
+        ds = ds.map(lambda x: prepare_dataset_with_system_prompt(x, tokenizer, max_length, padding), batched=False)
     else:
-        ds = ds.map(lambda x: prepare_dataset(x, tokenizer, max_length), batched=False)
+        ds = ds.map(lambda x: prepare_dataset(x, tokenizer, max_length, padding), batched=False)
 
     ds = ds.filter(lambda x: len(x["input_ids"]) <= max_length, batched=False)
     ds.set_format(type="torch")
