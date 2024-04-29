@@ -123,10 +123,17 @@ def word_count(text):
   return text_len - query_len
 
 def compute_human_scores(batch, classifier_pipe, sent_kwargs):
-    classifier_output = classifier_pipe(batch["response"], **sent_kwargs)
-    ref_classifier_output = classifier_pipe(batch["ref_response"], **sent_kwargs)
-    human_scores = [torch.tensor(output[0]["score"]) for output in classifier_output] # this is WRONG! first label not always == 'human'!!!
-    ref_human_scores = [torch.tensor(output[0]["score"]) for output in ref_classifier_output] # this is WRONG! first label not always == 'human'!!!
+    classifier_outputs_lists = classifier_pipe(batch["response"], **sent_kwargs) # list of lists
+    ref_classifier_outputs_lists = classifier_pipe(batch["ref_response"], **sent_kwargs) #list of lists
+    
+    classifier_outputs = [output for outputs_list in classifier_outputs_lists for output in outputs_list] # flatten
+    ref_classifier_outputs = [output for outputs_list in ref_classifier_outputs_lists for output in outputs_list] # flatten
+
+    classifier_outputs = [output for output in classifier_outputs if output['label'].lower() == 'human'] # filter for human scores
+    ref_classifier_outputs = [output for output in ref_classifier_outputs if output['label'].lower() == 'human'] # filter for human scores
+    
+    human_scores = [torch.tensor(output["score"]) for output in classifier_outputs] 
+    ref_human_scores = [torch.tensor(output["score"]) for output in ref_classifier_outputs]
 
     return human_scores, ref_human_scores
 
