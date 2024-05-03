@@ -15,6 +15,14 @@
             "pin_memory": true
         }
     },
+    "activation_checkpointing": {
+        "partition_activations": true,
+        "cpu_checkpointing": true,
+        "contiguous_memory_optimization": true,
+        "number_checkpoints": 2,
+        "synchronize_checkpoint_boundary": false,
+        "profile": false
+    },
     "gradient_accumulation_steps": 8,
     "gradient_clipping": "auto",
     "steps_per_print": 2000,
