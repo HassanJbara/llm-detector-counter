@@ -1,13 +1,16 @@
 import torch
 from tqdm import tqdm
-from transformers import pipeline
+from transformers import pipeline, QuantoConfig, AutoTokenizer, AutoModelForCausalLM
 from accelerate import Accelerator
 from trl.import_utils import is_xpu_available
 from trl import AutoModelForCausalLMWithValueHead
+# from unsloth import FastLanguageModel
+from accelerate.utils import DummyOptim, DummyScheduler
+from peft import LoraConfig
 
-def prepare_classifier_pipe(ppo_trainer, reward_model):
+def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
     # build classifier pipeline
-    device = ppo_trainer.accelerator.device
+    device = device if device else ppo_trainer.accelerator.device
     if ppo_trainer.accelerator.num_processes == 1:
         if is_xpu_available():
             device = "xpu:0"
@@ -31,11 +34,13 @@ def prepare_classifier_pipe(ppo_trainer, reward_model):
     return classifier_pipe
 
 def build_model(model_name, args):
-    if not args.use_peft:
-        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, trust_remote_code=args.trust_remote_code)
-        device_map = None
-        peft_config = None
-    else:
+    assert not (args.quantize and args.flash_attn), "can not use quantization and flash-attn at the same time!"
+    
+    quantization_config = QuantoConfig(weights="int8") if args.quantize else None
+    flash_attn_config = "flash_attention_2" if args.flash_attn else None
+    torch_dtype= torch.bfloat16 if args.flash_attn else None
+        
+    if args.use_peft:
         peft_config = LoraConfig(
             r=args.lora_r,
             lora_alpha=args.lora_alpha,
@@ -45,17 +50,128 @@ def build_model(model_name, args):
         ref_model = None
         # Copy the model to each device
         device_map = {"": Accelerator().local_process_index}
+    else:
+        ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            model_name, 
+            trust_remote_code=args.trust_remote_code, 
+            quantization_config=quantization_config,
+            attn_implementation=flash_attn_config,
+            torch_dtype=torch_dtype, 
+        )
+        device_map = None
+        peft_config = None
     
     model = AutoModelForCausalLMWithValueHead.from_pretrained(
         model_name,
         trust_remote_code=args.trust_remote_code,
         device_map=device_map,
         peft_config=peft_config,
+        quantization_config=quantization_config,
+        attn_implementation=flash_attn_config,
+        torch_dtype=torch_dtype,
     )
 
     return model, ref_model
 
-def train(ppo_trainer, classifier_pipe, tokenizer, generation_kwargs, sent_kwargs):
+def build_model_for_benchmark(model_name: str, quantize: bool = False, flash_attn: bool = True, device="cuda:0"):
+    assert not (quantize and flash_attn), "please use either quantization or flash_attn, not both!"
+    
+    quantization_config = BitsAndBytesConfig(load_in_8bit=True) if quantize else None
+    dtype = torch.bfloat16 if flash_attn else None 
+    attn = "flash_attention_2" if flash_attn else None
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name,
+                                                 quantization_config=quantization_config, # do not use with flash_attn2
+                                                 torch_dtype=dtype,
+                                                 attn_implementation=attn,
+                                                 trust_remote_code=True
+                                                ).to(device)
+
+    return model, tokenizer
+
+def prepare_optim_and_scheduler(model):
+    optimizer, lr_scheduler = None, None
+    accelerator = Accelerator()
+    
+    if accelerator.state.deepspeed_plugin is None:
+        return optimizer, lr_scheduler
+    if "optimizer" in accelerator.state.deepspeed_plugin.deepspeed_config:
+        optimizer = DummyOptim(model.parameters())
+    if "scheduler" in accelerator.state.deepspeed_plugin.deepspeed_config:
+        lr_scheduler = DummyScheduler(optimizer)
+
+    return optimizer, lr_scheduler
+    
+# def build_model_unsloth(model_name, load_in_4bit, dtype=None):
+#     max_seq_length = 1024 # Choose any! We auto support RoPE Scaling internally!
+#     # dtype = torch.bfloat16 # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
+#     # load_in_4bit = False # Use 4bit quantization to reduce memory usage. Can be False.
+    
+#     model, _ = FastLanguageModel.from_pretrained(
+#         model_name = model_name,
+#         max_seq_length = max_seq_length,
+#         dtype = dtype,
+#         load_in_4bit = load_in_4bit,
+#     )
+
+#     return model
+
+def word_count(text):
+  return len(re.findall(r'\w+', text))
+
+  return text_len - query_len
+
+def compute_human_scores(batch, classifier_pipe, sent_kwargs):
+    classifier_outputs_lists = classifier_pipe(batch["response"], **sent_kwargs) # list of lists
+    ref_classifier_outputs_lists = classifier_pipe(batch["ref_response"], **sent_kwargs) #list of lists
+    
+    classifier_outputs = [output for outputs_list in classifier_outputs_lists for output in outputs_list] # flatten
+    ref_classifier_outputs = [output for outputs_list in ref_classifier_outputs_lists for output in outputs_list] # flatten
+
+    classifier_outputs = [output for output in classifier_outputs if output['label'].lower() == 'human'] # filter for human scores
+    ref_classifier_outputs = [output for output in ref_classifier_outputs if output['label'].lower() == 'human'] # filter for human scores
+    
+    human_scores = [torch.tensor(output["score"]) for output in classifier_outputs] 
+    ref_human_scores = [torch.tensor(output["score"]) for output in ref_classifier_outputs]
+
+    return human_scores, ref_human_scores
+
+def compute_hf_scores(batch, hf_pipe, sent_kwargs):
+    query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["response"]))]
+    ref_query_answer_pairs = [{"text": pair[0], "text_pair": pair[1]} for pair in list(zip(batch["query"], batch["ref_response"]))]
+    hf_outputs = hf_pipe(query_answer_pairs, **sent_kwargs)
+    ref_hf_outputs = hf_pipe(ref_query_answer_pairs, **sent_kwargs)
+    hf_scores = [torch.tensor(output[0]["score"]) for output in hf_outputs]
+    ref_hf_scores = [torch.tensor(output[0]["score"]) for output in ref_hf_outputs]
+
+    return hf_scores, ref_hf_scores
+    
+def compute_reward(batch, classifier_pipe, sent_kwargs, normal_training=False, hf_pipe=None, hf_model_weight=None):
+    if normal_training:
+        return compute_hf_scores(batch, classifier_pipe, sent_kwargs)
+
+    else:
+        human_scores, ref_human_scores = compute_human_scores(batch, classifier_pipe, sent_kwargs)
+
+        if hf_pipe:
+            hf_scores, ref_hf_scores = compute_hf_scores(batch, hf_pipe, sent_kwargs)
+            rewards, ref_rewards = [], []
+    
+            for i in range(len(batch["query"])):
+                normalized_human_score = (1/256) * human_scores[i] # 256 is half the max length of the response
+                normalized_ref_human_score = (1/256) * ref_human_scores[i] # 256 is half the max length of the response
+                reward = hf_model_weight*hf_scores[i] + (1-hf_model_weight)*normalized_human_score
+                ref_reward = hf_model_weight*ref_hf_scores[i] + (1-hf_model_weight)*normalized_ref_human_score
+                
+                rewards.append(reward)
+                ref_rewards.append(ref_reward)
+        
+            return rewards, ref_rewards
+        else:
+            return human_scores, ref_human_scores
+
+def train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe=None, hf_model_weight=None, normal_training=False):
     tqdm.pandas()
     
     for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
@@ -69,12 +185,8 @@ def train(ppo_trainer, classifier_pipe, tokenizer, generation_kwargs, sent_kwarg
         batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
         batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
-        # Compute sentiment score
-        pipe_outputs = classifier_pipe(batch["response"], **sent_kwargs)
-        rewards = [torch.tensor(output[0]["score"]) for output in pipe_outputs]
-        ref_pipe_outputs = classifier_pipe(batch["ref_response"], **sent_kwargs)
-        ref_rewards = [torch.tensor(output[0]["score"]) for output in ref_pipe_outputs]
-        batch["ref_rewards"] = ref_rewards
+        # Compute reward
+        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, sent_kwargs, normal_training, hf_pipe, hf_model_weight)
 
         # Run PPO step
         response_tensors_list = [rt for rt in response_tensors] # ppo_trainer.step expects a list
