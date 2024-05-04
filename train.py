@@ -1,10 +1,12 @@
 from typing import Optional
 from dataclasses import dataclass, field
 
+import torch
 from trl import PPOConfig, PPOTrainer, set_seed
 from transformers import AutoTokenizer, HfArgumentParser
-from dataset import build_dataset
-from utils import prepare_classifier_pipe, train, build_model, prepare_optim_and_scheduler
+from modules.dataset import build_dataset
+from modules.utils import prepare_classifier_pipe, build_model, prepare_optim_and_scheduler
+from modules.training import train
 
 @dataclass
 class ScriptArguments:
@@ -13,7 +15,9 @@ class ScriptArguments:
     hf_model: Optional[str] = field(default=None, metadata={"help": "model used to rate responses on helpfulness"})
     hf_model_weight: Optional[float] = field(default=0.5, metadata={"help": "weight given to the rewards of the hf_model"})
     normal_training: Optional[bool] = field(default=False, metadata={"help": "run normal training with a human feedback model"})
+    use_min: Optional[bool] = field(default=False, metadata={"help": "compute rewards using the min function of human feedback and human score"})
     synced_gpus: Optional[bool] = field(default=False, metadata={"help": "activate this flag when using Deepspeed ZeRO Stage 3"})
+
     
     # LoraConfig
     use_peft: bool = field(default=False, metadata={"help": "whether to use peft"})
@@ -57,9 +61,11 @@ def main(args, ppo_config):
     optimizer, lr_scheduler = prepare_optim_and_scheduler(model)
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, 
                              data_collator=collator, optimizer=optimizer, lr_scheduler=lr_scheduler)
-    
-    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, 'cuda:0')
-    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, 'cuda:1') if args.hf_model else None
+      
+    # load classifiers to last two cuda devices for efficient use of cuda memory
+    cuda_devices = [max(0, torch.cuda.device_count()-1), max(0, torch.cuda.device_count()-2)]
+    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, f'cuda:{cuda_devices[0]}')
+    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, f'cuda:{cuda_devices[1]}') if args.hf_model else None
 
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {
@@ -83,7 +89,7 @@ def main(args, ppo_config):
         "batch_size": ppo_config.mini_batch_size
     }
     
-    train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe, args.hf_model_weight, args.normal_training)
+    train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe, args.hf_model_weight, args.normal_training, args.use_min)
 
 if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, PPOConfig))
