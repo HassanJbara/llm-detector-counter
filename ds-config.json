@@ -1,6 +1,6 @@
 {
     "bf16": {
-        "enabled": true
+        "enabled": "auto"
     },
     "zero_optimization": {
         "stage": 2,
@@ -23,9 +23,9 @@
         "synchronize_checkpoint_boundary": false,
         "profile": false
     },
-    "gradient_accumulation_steps": 8,
+    "gradient_accumulation_steps": "auto",
     "gradient_clipping": "auto",
     "steps_per_print": 2000,
-    "train_micro_batch_size_per_gpu": 1,
+    "train_micro_batch_size_per_gpu": "auto",
     "wall_clock_breakdown": false
 }

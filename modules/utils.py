@@ -7,6 +7,28 @@ from trl import AutoModelForCausalLMWithValueHead
 from accelerate.utils import DummyOptim, DummyScheduler
 from peft import LoraConfig
 
+# For loading binoculars
+# accelerator = Accelerator()
+
+
+def scale_rewards(reward, left_min, left_max, right_min, right_max) -> float:
+    # Figure out how 'wide' each range is
+    left_span = left_max - left_min
+    right_span = right_max - right_min
+
+    # Convert the left range into a 0-1 range (float)
+    reward_scaled = float(reward - left_min) / float(left_span)
+
+    # Convert the 0-1 range into a value in the right range.
+    return right_min + (reward_scaled * right_span)
+
+# @accelerator.on_local_main_process
+# def prepare_binoculars():
+#     print("Loading Binoculars...")
+#     from binoculars import Binoculars # causes errors with deepspeed
+#     return Binoculars()
+#     # pass
+
 def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
     # build classifier pipeline
     device = device if device else ppo_trainer.accelerator.device
@@ -31,6 +53,13 @@ def prepare_classifier_pipe(ppo_trainer, reward_model, device=None):
         classifier_pipe.model.config.pad_token_id = tokenizer.pad_token_id
 
     return classifier_pipe
+
+def build_classifier(ppo_trainer, classifier_name: str, device=None):
+    prepare_binoculars()
+    if "binoculars" in classifier_name.lower():
+        return prepare_binoculars()
+    else:
+        return prepare_classifier_pipe(ppo_trainer, classifier_name, device)
 
 def build_model(model_name, args):
     assert not (args.quantize and args.flash_attn), "can not use quantization and flash-attn at the same time!"

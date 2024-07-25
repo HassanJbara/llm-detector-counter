@@ -5,7 +5,7 @@ import torch
 from trl import PPOConfig, PPOTrainer, set_seed
 from transformers import AutoTokenizer, HfArgumentParser
 from modules.dataset import build_dataset
-from modules.utils import prepare_classifier_pipe, build_model, prepare_optim_and_scheduler
+from modules.utils import build_classifier, build_model, prepare_optim_and_scheduler
 from modules.training import train
 
 @dataclass
@@ -32,7 +32,7 @@ class ScriptArguments:
 def main(args, ppo_config):
     assert not (args.quantize and args.flash_attn), "Quantization can not be used with flash attention 2!"
     dataset_name = ppo_config.query_dataset if ppo_config.query_dataset else "LDJnr/Pure-Dove"
-    
+
     # tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         ppo_config.model_name, 
@@ -61,11 +61,11 @@ def main(args, ppo_config):
     optimizer, lr_scheduler = prepare_optim_and_scheduler(model)
     ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, 
                              data_collator=collator, optimizer=optimizer, lr_scheduler=lr_scheduler)
-      
+
     # load classifiers to last two cuda devices for efficient use of cuda memory
     cuda_devices = [max(0, torch.cuda.device_count()-1), max(0, torch.cuda.device_count()-2)]
-    classifier_pipe = prepare_classifier_pipe(ppo_trainer, ppo_config.reward_model, f'cuda:{cuda_devices[0]}')
-    hf_pipe = prepare_classifier_pipe(ppo_trainer, args.hf_model, f'cuda:{cuda_devices[1]}') if args.hf_model else None
+    classifier = build_classifier(ppo_trainer, ppo_config.reward_model, f'cuda:{cuda_devices[0]}')
+    hf_pipe = build_classifier(ppo_trainer, args.hf_model, f'cuda:{cuda_devices[1]}') if args.hf_model else None
 
     # arguments of `generate` function of the PPOTrainer, wrapper around `generate` function of model.
     generation_kwargs = {
@@ -89,7 +89,8 @@ def main(args, ppo_config):
         "batch_size": ppo_config.mini_batch_size
     }
     
-    train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe, args.hf_model_weight, args.normal_training, args.use_min)
+    train(ppo_trainer, tokenizer, classifier, ppo_config.reward_model, generation_kwargs, sent_kwargs, 
+          hf_pipe, args.hf_model_weight, args.normal_training, args.use_min)
 
 if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, PPOConfig))

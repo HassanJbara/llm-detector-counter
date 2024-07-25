@@ -1,9 +1,27 @@
 import torch
 from tqdm import tqdm
+from typing import List, Tuple
+from .utils import scale_rewards
 
-def compute_human_scores(batch, classifier_pipe, sent_kwargs):
-    classifier_outputs_lists = classifier_pipe(batch["response"], **sent_kwargs) # list of lists
-    ref_classifier_outputs_lists = classifier_pipe(batch["ref_response"], **sent_kwargs) #list of lists
+
+def compute_binocular_scores(batch, bino) -> Tuple[List[float], List[float]]:
+    classifier_outputs = bino.compute_score(batch["response"])
+    ref_classifier_outputs = bino.compute_score(batch["ref_response"])
+
+    classifier_outputs = [min(x, 1.0) for x in classifier_outputs]
+    ref_classifier_outputs = [min(x, 1.0) for x in ref_classifier_outputs]
+    
+    human_scores = [torch.tensor(scale_rewards(x, 0, 1, -4, 4)) for x in classifier_outputs]
+    ref_human_scores = [torch.tensor(scale_rewards(x, 0, 1, -4, 4)) for x in classifier_outputs]
+
+    return human_scores, ref_human_scores
+
+def compute_human_scores(batch, classifier, classifier_name: str = "simpleai", sent_kwargs=None) -> Tuple[List[float], List[float]]:
+    if classifier_name.lower() == "binoculars":
+        return compute_binocular_scores(batch, classifier)
+        
+    classifier_outputs_lists = classifier(batch["response"], **sent_kwargs) # list of lists
+    ref_classifier_outputs_lists = classifier(batch["ref_response"], **sent_kwargs) #list of lists
     
     classifier_outputs = [output for outputs_list in classifier_outputs_lists for output in outputs_list] # flatten
     ref_classifier_outputs = [output for outputs_list in ref_classifier_outputs_lists for output in outputs_list] # flatten
@@ -26,13 +44,13 @@ def compute_hf_scores(batch, hf_pipe, sent_kwargs):
 
     return hf_scores, ref_hf_scores
     
-def compute_reward(batch, classifier_pipe, sent_kwargs, normal_training=False, hf_pipe=None, hf_model_weight=None, use_min: bool = False):
+def compute_reward(batch, classifier, classifier_name, sent_kwargs, normal_training=False, hf_pipe=None, hf_model_weight=None, use_min: bool = False):
     # if normal feedback reward model training 
     if normal_training:
-        return compute_hf_scores(batch, classifier_pipe, sent_kwargs)
+        return compute_hf_scores(batch, classifier, sent_kwargs)
 
     # otherwise, with human score classifier
-    human_scores, ref_human_scores = compute_human_scores(batch, classifier_pipe, sent_kwargs)
+    human_scores, ref_human_scores = compute_human_scores(batch, classifier, classifier_name, sent_kwargs)
 
     if hf_pipe:
         hf_scores, ref_hf_scores = compute_hf_scores(batch, hf_pipe, sent_kwargs)
@@ -55,7 +73,7 @@ def compute_reward(batch, classifier_pipe, sent_kwargs, normal_training=False, h
     else:
         return human_scores, ref_human_scores
 
-def train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwargs, hf_pipe=None, 
+def train(ppo_trainer, tokenizer, classifier, classifier_name, generation_kwargs, sent_kwargs, hf_pipe=None, 
           hf_model_weight=None, normal_training: bool = False, use_min: bool = False):
     tqdm.pandas()
     
@@ -71,7 +89,7 @@ def train(ppo_trainer, tokenizer, classifier_pipe, generation_kwargs, sent_kwarg
         batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors, skip_special_tokens=True)
 
         # Compute reward
-        rewards, batch["ref_rewards"] = compute_reward(batch, classifier_pipe, sent_kwargs, normal_training, hf_pipe, hf_model_weight, use_min)
+        rewards, batch["ref_rewards"] = compute_reward(batch, classifier, classifier_name, sent_kwargs, normal_training, hf_pipe, hf_model_weight, use_min)
 
         # Run PPO step
         response_tensors_list = [rt for rt in response_tensors] # ppo_trainer.step expects a list
