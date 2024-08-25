@@ -21,7 +21,8 @@ class ScriptArguments:
     synced_gpus: Optional[bool] = field(default=False, metadata={"help": "activate this flag when using Deepspeed ZeRO Stage 3"})
     # sanity_check: Optional[bool] = field(default=False,)
     save_model: Optional[bool] = field(default=False,)
-    sys_prompt: Optional[bool] = field(default=True,)
+    sys_prompt: Optional[bool] = field(default=False,)
+    # synced_gpus: Optional[bool] = field(default=False, metadata={"help": "activate this flag when using Deepspeed ZeRO Stage 3"})
     
     # LoraConfig
     use_peft: bool = field(default=False, metadata={"help": "whether to use peft"})
@@ -107,10 +108,20 @@ def main(args, dpo_config):
             if args.sys_prompt:
                 prompt.append({"content": sys_prompt, "role": "system"})
             prompt.append({"content": row["query"], "role": "user"})
-            
+
+            if "mistral" in args.model_name.lower():
+                chosen = row["chosen"] + tokenizer.eos_token
+                rejected = row["rejected"] + tokenizer.eos_token
+            elif "gemma" in args.model_name.lower():
+                chosen = '<start_of_turn>' + "model\n" + row["chosen"] + "<end_of_turn>\n"
+                rejected = '<start_of_turn>' + "model\n" + row["rejected"] + "<end_of_turn>\n"
+            else:
+                chosen = tokenizer.apply_chat_template([{"content": row["chosen"], "role": "assistant"}], tokenize=False)
+                rejected = tokenizer.apply_chat_template([{"content": row["rejected"], "role": "assistant"}], tokenize=False)
+                
             row["prompt"] = tokenizer.apply_chat_template(prompt, tokenize=False)
-            row["chosen"] = tokenizer.apply_chat_template([{"content": row["chosen"], "role": "assistant"}], tokenize=False)
-            row["rejected"] = tokenizer.apply_chat_template([{"content": row["rejected"], "role": "assistant"}], tokenize=False)
+            row["chosen"] = chosen
+            row["rejected"] = rejected
         else:
             row["prompt"] = tokenizer.apply_chat_template(row["chosen"][:-1], tokenize=False)
             row["chosen"] = tokenizer.apply_chat_template([row["chosen"][-1]], tokenize=False)
